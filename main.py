@@ -8,12 +8,14 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import mean_squared_error, mean_absolute_error
 
+# Use nvidia gpu if found, otherwise use cpu
+
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Load dataset
 data = fetch_california_housing()
 X = data.data
-y = data.target.reshape(-1, 1)  # make y a column
+y = data.target.reshape(-1, 1)
 
 print("Dataset shape:", X.shape, y.shape)
 
@@ -66,72 +68,104 @@ model = NOVA().to(device)
 criterion = nn.MSELoss()
 optimizer = optim.Adam(model.parameters(), lr=0.0005, weight_decay=1e-5)
 
-# Start the training
+# Training config
+
+USE_ENSEMBLE = True   # True = multiple runs + averaging | False = single run
+NUM_RUNS = 5          # Number of independent runs if ensemble is enabled
 
 N = len(X_train)
 patience = 20
-best_loss = float('inf')
-counter = 0
 max_epochs = 1000
 
-for epoch in range(max_epochs):
-    perm = torch.randperm(N)
-    epoch_loss = 0
-
-    for i in range(0, N, BATCH_SIZE):
-        idx = perm[i:i+BATCH_SIZE]
-        X_batch = X_train_tensor[idx]
-        y_batch = y_train_tensor[idx]
-
-        predictions = model(X_batch)
-        loss = criterion(predictions, y_batch)
-
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
-        epoch_loss += loss.item() * len(idx)
-
-    epoch_loss /= N
-
-    # Early stopping check
-    if epoch_loss < best_loss:
-        best_loss = epoch_loss
-        counter = 0
-    else:
-        counter += 1
-
-    if counter >= patience:
-        print(f"Early stopping at epoch {epoch}")
-        break
-
-    if epoch % 10 == 0:
-        print(f"Epoch {epoch} | Loss: {epoch_loss:.4f}")
+all_preds = []
 
 
-model.eval()
+# Run the training with multiple models
 
-# Initialise testing
+def train_single_model():
+    model = NOVA().to(device)
+    optimizer = optim.Adam(model.parameters(), lr=0.0001, weight_decay=1e-5)
 
-with torch.no_grad():
-    # Predict on the full test set
-    y_pred_scaled = model(X_test_tensor).cpu().numpy()
-    y_pred = scaler_y.inverse_transform(y_pred_scaled)  # back to original scale
-    y_true = scaler_y.inverse_transform(y_test_tensor.cpu().numpy())
+    best_loss = float('inf')
+    counter = 0
 
-    # Compute MSE and MAE
-    mse = mean_squared_error(y_true, y_pred)
-    mae = mean_absolute_error(y_true, y_pred)
+    for epoch in range(max_epochs):
+        perm = torch.randperm(N)
+        epoch_loss = 0
 
-    print(f"\nFull Test Set Metrics:")
-    print(f"MSE: {mse:.4f}")
-    print(f"MAE: {mae:.4f}")
+        for i in range(0, N, BATCH_SIZE):
+            idx = perm[i:i+BATCH_SIZE]
+            X_batch = X_train_tensor[idx]
+            y_batch = y_train_tensor[idx]
 
-    # Optional: show first 5 predictions vs actual
-    print("\nSample | Predicted | Actual | % Error")
-    print("-" * 40)
-    for i in range(5):
-        p = y_pred[i][0]
-        a = y_true[i][0]
-        perc_err = 100 * abs(p - a) / a if a != 0 else 0.0
-        print(f"{i+1:>6} | {p:9.2f} | {a:6.2f} | {perc_err:7.1f}%")
+            optimizer.zero_grad()
+            predictions = model(X_batch)
+            loss = criterion(predictions, y_batch)
+            loss.backward()
+            optimizer.step()
+
+            epoch_loss += loss.item() * len(idx)
+
+        epoch_loss /= N
+
+        if epoch_loss < best_loss:
+            best_loss = epoch_loss
+            counter = 0
+        else:
+            counter += 1
+
+        if counter >= patience:
+            print(f"Early stopping at epoch {epoch}")
+            break
+
+        if epoch % 50 == 0:
+            print(f"Epoch {epoch} | Loss: {epoch_loss:.4f}")
+
+    return model
+
+
+# Run the training with multiple models
+
+if USE_ENSEMBLE:
+    print(f"\nRunning ensemble training with {NUM_RUNS} models...\n")
+
+    for run in range(NUM_RUNS):
+        print(f"Model {run+1}/{NUM_RUNS}")
+        model = train_single_model()
+
+        model.eval()
+        with torch.no_grad():
+            preds = model(X_test_tensor).cpu().numpy()
+            all_preds.append(preds)
+
+    avg_preds_scaled = np.mean(all_preds, axis=0)
+
+else:
+    print("\nRunning single model training...\n")
+
+    model = train_single_model()
+
+    model.eval()
+    with torch.no_grad():
+        avg_preds_scaled = model(X_test_tensor).cpu().numpy()
+
+
+# Testing
+
+y_pred = scaler_y.inverse_transform(avg_preds_scaled)
+y_true = scaler_y.inverse_transform(y_test_tensor.cpu().numpy())
+
+mse = mean_squared_error(y_true, y_pred)
+mae = mean_absolute_error(y_true, y_pred)
+
+print(f"\nFinal Test Metrics:")
+print(f"MSE: {mse:.4f}")
+print(f"MAE: {mae:.4f}")
+
+print("\nSample | Predicted | Actual | % Error")
+print("-" * 40)
+for i in range(5):
+    p = y_pred[i][0]
+    a = y_true[i][0]
+    perc_err = 100 * abs(p - a) / a if a != 0 else 0.0
+    print(f"{i+1:>6} | {p:9.2f} | {a:6.2f} | {perc_err:7.1f}%")
