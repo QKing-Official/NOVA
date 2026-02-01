@@ -12,9 +12,10 @@ Currently this is just a python file and not a library (it will be soon).
 You can try the demo by installing the requirements. Make sure python 3.11 is installed first.
 Run `pip install -r requirements.txt`
 After that you can run `python main.py` and you can test it on your own.
+To run a exported model run `python run.py`
 
-# Todo
+To intergrate this on your own please take a look at the run.py as well!
 
-- Combining and saving clusters to a single exportable model
-- Making NOVA a python library
+## License
 
+This is licensed under the MIT license and feel free to modify it!
